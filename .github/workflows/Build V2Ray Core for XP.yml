@@ -18,16 +18,19 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      # 1. 获取仓库源码
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 2. 安装引导 Go
       - name: Install bootstrap Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21.13'
           cache: false
 
-      - name: Build Windows XP compatible Go toolchain
+      # 3. 编译 XP 专用 Go 工具链
+      - name: Build XP compatible Go toolchain
         shell: bash
         run: |
           git clone --depth 1 \
@@ -43,36 +46,59 @@ jobs:
           echo "GOROOT=$GITHUB_WORKSPACE/go-backports" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/go-backports/bin" >> $GITHUB_PATH
 
-      - name: Check XP Go toolchain
+      # 4. 检查 Go 工具链
+      - name: Check Go toolchain
         shell: bash
         run: |
           go version
           go env GOROOT
 
-      - name: Check V2Ray dependencies
+      # 5. 检查 v5.9.0 源码目录
+      - name: Check V2Ray source
+        working-directory: v2ray-core
+        shell: bash
+        run: |
+          echo "===== Go module ====="
+          head -10 go.mod
+
+          echo "===== Main package ====="
+          test -d ./main || {
+            echo "ERROR: ./main directory not found"
+            exit 1
+          }
+
+          echo "===== Control package ====="
+          if [ -d ./infra/control/main ]; then
+            echo "Control package exists"
+          else
+            echo "Control package not found; v2ctl will be skipped"
+          fi
+
+          echo "===== Source directories ====="
+          find infra -maxdepth 3 -type d | sort
+
+      # 6. 下载依赖并检查 QUIC
+      - name: Download dependencies
         working-directory: v2ray-core
         shell: bash
         env:
           GOTOOLCHAIN: local
         run: |
-          echo "===== Go version ====="
-          go version
-
-          echo "===== Download dependencies ====="
           go mod download
 
-          echo "===== QUIC dependency ====="
+          echo "===== QUIC ====="
           go list -m github.com/quic-go/quic-go
 
-          echo "===== qtls dependency ====="
+          echo "===== qtls ====="
           go list -m github.com/quic-go/qtls-go1-20
 
-          echo "===== Check old qtls ====="
+          echo "===== Old qtls check ====="
           if go list -m all | grep -E 'marten-seemann/qtls-go1-15'; then
             echo "ERROR: Old qtls dependency detected"
             exit 1
           fi
 
+      # 7. 编译 V2Ray 主程序
       - name: Build V2Ray for Windows XP x86
         working-directory: v2ray-core
         shell: bash
@@ -88,26 +114,48 @@ jobs:
             -o v2ray.exe \
             ./main
 
-          go build -v \
-            -trimpath \
-            -ldflags "-s -w -buildid=" \
-            -tags confonly \
-            -o v2ctl.exe \
-            ./infra/control/main
+      # 8. 可选编译 v2ctl
+      - name: Build v2ctl if available
+        working-directory: v2ray-core
+        shell: bash
+        env:
+          GOOS: windows
+          GOARCH: '386'
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+        run: |
+          if [ -d ./infra/control/main ]; then
+            go build -v \
+              -trimpath \
+              -ldflags "-s -w -buildid=" \
+              -tags confonly \
+              -o v2ctl.exe \
+              ./infra/control/main
+          else
+            echo "Skipping v2ctl: source directory does not exist"
+          fi
 
+      # 9. 检查并整理程序
       - name: Verify binaries
         shell: bash
         run: |
           mkdir -p release-xp
 
+          test -f v2ray-core/v2ray.exe
+
           cp v2ray-core/v2ray.exe release-xp/
-          cp v2ray-core/v2ctl.exe release-xp/
 
-          file release-xp/v2ray.exe
-          file release-xp/v2ctl.exe
+          if [ -f v2ray-core/v2ctl.exe ]; then
+            cp v2ray-core/v2ctl.exe release-xp/
+          fi
 
+          echo "===== Binary information ====="
+          file release-xp/*.exe
+
+          echo "===== File sizes ====="
           ls -lh release-xp/
 
+      # 10. 上传编译结果
       - name: Upload XP binaries
         uses: actions/upload-artifact@v4
         with:
